@@ -13,23 +13,41 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-name: CI
+name: Daffodil Integration Workflow
 
-# Run CI when pushing a commit to main or creating a pull request or
-# adding another commit to a pull request or reopening a pull request.
+# Run whenever creating or reopening or updating a pull request or
+# pushing a commit to a branch.
 
 on:
+  pull_request:
+    types: [ opened, reopened, synchronize ]
   push:
     branches-ignore: [ 'dependabot/**' ]
-  pull_request:
-    types: [opened, synchronize, reopened]
+    tags-ignore: [ '**' ]
+  workflow_dispatch:
 
 jobs:
 
   # Build Daffodil and run some checks.
 
-  check:
+  integration:
+    defaults:
+      run:
+        shell: ${{ matrix.shell }}
+    env:
+      AR: ${{ matrix.env_ar }}
+      CC: ${{ matrix.env_cc }}
+      SBT: sbt -J-Xms1024m -J-Xmx5120m -J-XX:ReservedCodeCacheSize=512m -J-XX:MaxMetaspaceSize=1024m ++${{ matrix.scala_version }}
+      SONARSCAN: ${{
+                     matrix.os == 'ubuntu-20.04' &&
+                     matrix.java_version == '11' &&
+                     matrix.scala_version == '2.12.15' &&
+                     github.event_name == 'push' &&
+                     github.repository == 'apache/daffodil' &&
+                     github.ref == 'refs/heads/main'
+                  }}
     name: Java ${{ matrix.java_version }}, Scala ${{ matrix.scala_version }}, ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
@@ -46,23 +64,6 @@ jobs:
             shell: msys2 {0}
             env_cc: clang
             env_ar: llvm-ar
-
-    runs-on: ${{ matrix.os }}
-    defaults:
-      run:
-        shell: ${{ matrix.shell }}
-    env:
-      AR: ${{ matrix.env_ar }}
-      CC: ${{ matrix.env_cc }}
-      SBT: sbt -J-Xms1024m -J-Xmx5120m -J-XX:ReservedCodeCacheSize=512m -J-XX:MaxMetaspaceSize=1024m ++${{ matrix.scala_version }}
-      SONARSCAN: ${{
-                     matrix.os == 'ubuntu-20.04' &&
-                     matrix.java_version == '11' &&
-                     matrix.scala_version == '2.12.15' &&
-                     github.event_name == 'push' &&
-                     github.repository == 'apache/daffodil' &&
-                     github.ref == 'refs/heads/main'
-                  }}
 
     steps:
 
@@ -107,18 +108,12 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Setup Java
+      - name: Setup Java and SBT
         uses: actions/setup-java@v3.4.1
         with:
+          cache: sbt
           distribution: ${{ matrix.distribution }}
           java-version: ${{ matrix.java_version }}
-          cache: sbt
-
-      # Cache Action - tried on 2021-06-28, removed because it didn't help
-      # 1. Tried coursier/cache-action but Apache didn't allow it
-      #    extraSbtFiles: daffodil-cli/build.sbt daffodil-japi/build.sbt
-      # 2. Tried actions/cache but it didn't speed up CI at all
-      #    path: ~/.cache/coursier ~/.ivy2/cache ~/.sbt 
 
       ############################################################
       # Build & Package
@@ -126,6 +121,10 @@ jobs:
 
       - name: Compile
         run: $SBT coverage compile Test/compile IntegrationTest/compile
+
+      - name: Update Dependency Graph
+        if: github.ref == 'refs/heads/test' && matrix.java_version == '17' && runner.os == 'Linux'
+        uses: scalacenter/sbt-dependency-submission@v2.0.1
 
       - name: Build Documentation
         run: $SBT unidoc
